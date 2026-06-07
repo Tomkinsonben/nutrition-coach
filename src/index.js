@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { handleIncomingMessage } = require('./whatsapp');
 const { initScheduler } = require('./scheduler');
+const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,17 +10,31 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
+// Seed Ben's profile on every startup
+function seedProfile() {
+  const phone = 'whatsapp:+61490037541';
+  const existing = db.getUser(phone);
+  if (!existing || !existing.onboarded) {
+    db.upsertUser(phone, {
+      name: 'Ben',
+      goal: 'lose',
+      target_calories: 2200,
+      target_protein: 192,
+      target_carbs: 220,
+      target_fat: 73,
+      weight_kg: 181,
+      height_cm: 196,
+      age: 37,
+      onboarded: 1
+    });
+    console.log('[Setup] Ben profile seeded');
+  } else {
+    console.log('[Setup] Ben profile already exists');
+  }
+}
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-app.get('/setup', (req, res) => {
-  const db = require('./database');
-  db.db.prepare(`
-    INSERT OR REPLACE INTO users (phone, name, goal, target_calories, target_protein, target_carbs, target_fat, onboarded)
-    VALUES ('whatsapp:+61490037541', 'Ben', 'lose', 2200, 192, 220, 73, 1)
-  `).run();
-  res.json({ status: 'Profile created for Ben' });
 });
 
 app.post('/webhook', handleIncomingMessage);
@@ -35,5 +50,6 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`[Server] Nutrition coach running on port ${PORT}`);
+  seedProfile();
   initScheduler();
 });
