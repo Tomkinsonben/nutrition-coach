@@ -4,23 +4,12 @@ const db = require('./database');
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
 
-const SYSTEM_PROMPT = `You are an expert AI nutrition coach delivered via WhatsApp. You are friendly, motivating, and evidence-based. Your role is to help users track their food intake, monitor their weight, and achieve their health goals.
-
-You can:
-- Analyze and log food entries, estimating calories and macronutrients
-- Log body weight
-- Answer nutrition and health questions
-- Provide daily summaries and progress reports
-- Offer motivating, personalized advice
-
-When analyzing food, always provide your best estimate even if the description is vague. Return structured data when requested.
-
-Keep responses concise and conversational — this is WhatsApp, not a medical report. Use emojis sparingly but warmly. Never give medical advice.`;
+const SYSTEM_PROMPT = `You are a supportive nutrition coach for Ben. Age 37, 175kg, 196cm, goal weight 120kg. Daily targets: 2200 kcal, 192g protein. Be direct and practical, not patronising. Suggest real whole foods available at Coles/Woolworths in Perth, Australia. When estimating macros be specific with numbers. Keep responses concise and friendly — this is WhatsApp not a medical report.`;
 
 async function detectIntent(message, conversationHistory, user) {
   const userContext = user
-    ? `User: ${user.name || 'Unknown'}, Goal: ${user.goal}, Daily targets: ${user.target_calories}kcal / ${user.target_protein}g protein / ${user.target_carbs}g carbs / ${user.target_fat}g fat`
-    : 'New user, not yet onboarded';
+    ? `User: ${user.name || 'Ben'}, Goal: lose weight, Daily targets: ${user.target_calories || 2200}kcal / ${user.target_protein || 192}g protein`
+    : 'User: Ben, Goal: lose weight, Daily targets: 2200kcal / 192g protein';
 
   const messages = [
     ...conversationHistory,
@@ -34,31 +23,37 @@ async function detectIntent(message, conversationHistory, user) {
 
 Current user context: ${userContext}
 
-IMPORTANT: Respond ONLY with a valid JSON object. No markdown, no explanation. Use this schema:
+IMPORTANT: Respond ONLY with a valid JSON object. No markdown, no explanation, no code blocks. Raw JSON only. Use this schema:
 {
-  "intent": "log_food" | "log_weight" | "ask_question" | "check_progress" | "onboarding" | "other",
+  "intent": "log_food" | "log_weight" | "ask_question" | "check_progress" | "other",
   "confidence": 0.0-1.0,
   "extracted": {
-    // For log_food: { "description": "...", "meal_type": "breakfast|lunch|dinner|snack" }
-    // For log_weight: { "weight_kg": number }
-    // For onboarding: { "name": "...", "goal": "lose|gain|maintain", "target_calories": number }
-    // For others: {}
+    "description": "food description if log_food",
+    "meal_type": "breakfast|lunch|dinner|snack if log_food",
+    "weight_kg": 0
   },
-  "response": "Your friendly WhatsApp reply to the user"
+  "response": "Your friendly conversational WhatsApp reply to Ben — plain text only, no JSON"
 }`,
     messages,
   });
 
-  const text = response.content[0].text.trim();
+  const text = response.content[0].text.trim()
+    .replace(/^```json\n?/, '')
+    .replace(/^```\n?/, '')
+    .replace(/\n?```$/, '');
+
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (parsed.response && parsed.response.includes('"intent"')) {
+      parsed.response = "Got it! I'm tracking that for you.";
+    }
+    return parsed;
   } catch {
-    // Fallback if JSON parsing fails
     return {
       intent: 'other',
       confidence: 0.5,
       extracted: {},
-      response: text,
+      response: text.includes('{') ? "Got it! How can I help?" : text,
     };
   }
 }
@@ -67,10 +62,10 @@ async function analyzeFoodEntry(description, mealType) {
   const response = await client.messages.create({
     model: MODEL,
     max_tokens: 512,
-    system: 'You are a nutrition expert. Analyze food descriptions and return ONLY a valid JSON object with calorie and macronutrient estimates. Be realistic and use standard serving sizes when not specified.',
+    system: 'You are a nutrition expert. Analyze food descriptions and return ONLY a valid JSON object with calorie and macronutrient estimates. No markdown, no code blocks. Raw JSON only.',
     messages: [{
       role: 'user',
-      content: `Analyze this food entry and estimate nutrition values: "${description}" (meal type: ${mealType})
+      content: `Analyze this food entry: "${description}" (meal type: ${mealType})
 
 Respond ONLY with this JSON:
 {
@@ -78,12 +73,16 @@ Respond ONLY with this JSON:
   "protein_g": number,
   "carbs_g": number,
   "fat_g": number,
-  "notes": "brief note about the estimate"
+  "notes": "brief note"
 }`,
     }],
   });
 
-  const text = response.content[0].text.trim();
+  const text = response.content[0].text.trim()
+    .replace(/^```json\n?/, '')
+    .replace(/^```\n?/, '')
+    .replace(/\n?```$/, '');
+
   try {
     return JSON.parse(text);
   } catch {
@@ -101,17 +100,16 @@ async function generateDailySummary(phone, date, totals, user, weightEntry) {
     system: SYSTEM_PROMPT,
     messages: [{
       role: 'user',
-      content: `Generate a friendly end-of-day summary for ${user.name || 'the user'}.
+      content: `Generate a friendly end-of-day WhatsApp summary for Ben.
 
-Their goal: ${user.goal}
-Targets: ${user.target_calories}kcal / ${user.target_protein}g protein / ${user.target_carbs}g carbs / ${user.target_fat}g fat
+Targets: 2200kcal / 192g protein
 Today's totals: ${totals.calories}kcal / ${totals.protein_g}g protein / ${totals.carbs_g}g carbs / ${totals.fat_g}g fat
 ${weightEntry ? `Today's weight: ${weightEntry.weight_kg}kg` : 'No weight logged today'}
 
 Today's meals:
 ${foodList || 'No meals logged today'}
 
-Keep it under 150 words. Be encouraging. Highlight what went well and one area to improve.`,
+Keep it under 150 words. Be encouraging. Plain text only, no JSON.`,
     }],
   });
 
@@ -133,15 +131,15 @@ async function generateWeeklyReport(phone, user, weeklySummary, weightHistory) {
     system: SYSTEM_PROMPT,
     messages: [{
       role: 'user',
-      content: `Generate a weekly progress report for ${user.name || 'the user'}.
+      content: `Generate a weekly progress report for Ben.
 
-Goal: ${user.goal}
-Calorie target: ${user.target_calories}kcal/day
+Goal: lose weight
+Calorie target: 2200kcal/day
 Average daily calories this week: ${avgCalories}kcal
 Days logged: ${weeklySummary.length}/7
 ${weightTrend !== null ? `Weight change this week: ${weightTrend > 0 ? '+' : ''}${weightTrend}kg` : 'No weight data this week'}
 
-Keep it under 200 words. Be motivating. Include a specific tip for next week.`,
+Keep it under 200 words. Be motivating. Plain text only, no JSON.`,
     }],
   });
 
@@ -151,11 +149,11 @@ Keep it under 200 words. Be motivating. Include a specific tip for next week.`,
 async function generateMorningCheckin(user) {
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 200,
+    max_tokens: 300,
     system: SYSTEM_PROMPT,
     messages: [{
       role: 'user',
-      content: `Write a brief, energetic good morning message for ${user.name || 'the user'} who wants to ${user.goal} weight. Their daily calorie target is ${user.target_calories}kcal. Include one small nutrition tip. Under 60 words.`,
+      content: `Write a brief energetic good morning message for Ben who wants to lose weight and reach 120kg. His daily calorie target is 2200kcal. Suggest a high protein breakfast option available at Coles/Woolworths Perth. Under 80 words. Plain text only.`,
     }],
   });
 
@@ -163,10 +161,6 @@ async function generateMorningCheckin(user) {
 }
 
 async function answerQuestion(question, user, conversationHistory) {
-  const userContext = user
-    ? `User goal: ${user.goal}, Targets: ${user.target_calories}kcal / ${user.target_protein}g protein`
-    : '';
-
   const messages = [
     ...conversationHistory,
     { role: 'user', content: question },
@@ -175,7 +169,7 @@ async function answerQuestion(question, user, conversationHistory) {
   const response = await client.messages.create({
     model: MODEL,
     max_tokens: 500,
-    system: `${SYSTEM_PROMPT}\n\n${userContext}`,
+    system: SYSTEM_PROMPT,
     messages,
   });
 
