@@ -10,12 +10,11 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// Seed Ben's profile on every startup
-function seedProfile() {
+async function seedProfile() {
   const phone = 'whatsapp:+61490037541';
-  const existing = db.getUser(phone);
+  const existing = await db.getUser(phone);
   if (!existing || !existing.onboarded) {
-    db.upsertUser(phone, {
+    await db.upsertUser(phone, {
       name: 'Ben',
       goal: 'lose',
       target_calories: 2200,
@@ -48,8 +47,13 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`[Server] Nutrition coach running on port ${PORT}`);
-  seedProfile();
-  initScheduler();
-});
+async function start() {
+  await db.init();
+  await seedProfile();
+  app.listen(PORT, () => {
+    console.log(`[Server] Nutrition coach running on port ${PORT}`);
+    initScheduler();
+  });
+}
+
+start().catch(console.error);
